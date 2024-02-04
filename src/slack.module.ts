@@ -1,10 +1,21 @@
-import { DynamicModule, Module, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  DynamicModule,
+  Inject,
+  Module,
+  OnApplicationBootstrap,
+  Provider,
+  Type,
+} from '@nestjs/common';
 import { ExplorerService } from './services/explorer.service';
 import { SlackService } from './services/slack.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { App, AppOptions, LogLevel } from '@slack/bolt';
 import { LoggerProxy } from './loggers/logger.proxy';
-import { SlackModuleOptions } from './interfaces/modules/module.options';
+import {
+  SlackModuleAsyncOptions,
+  SlackModuleOptions,
+  SlackModuleOptionsFactory,
+} from './interfaces/modules/module.options';
 
 const SLACK = 'Slack';
 const SLACK_MODULE_OPTIONS = 'SLACK_MODULE_OPTIONS';
@@ -34,8 +45,8 @@ const slackServiceFactory = {
 @Module({})
 export class SlackModule implements OnApplicationBootstrap {
   constructor(
-    private readonly slackService: SlackService,
-    private readonly explorerService: ExplorerService,
+    @Inject(SlackService) private readonly slackService: SlackService,
+    @Inject(ExplorerService) private readonly explorerService: ExplorerService,
   ) {}
 
   static forRoot(options: SlackModuleOptions = {}): DynamicModule {
@@ -47,6 +58,23 @@ export class SlackModule implements OnApplicationBootstrap {
           provide: SLACK_MODULE_OPTIONS,
           useValue: options,
         },
+        ExplorerService,
+        LoggerProxy,
+        SlackService,
+        slackServiceFactory,
+      ],
+      exports: [SlackService],
+    };
+  }
+
+  static forRootAsync(options: SlackModuleAsyncOptions) {
+    const asyncProviders = createAsyncProviders(options);
+
+    return {
+      module: SlackModule,
+      imports: [ConfigModule.forRoot(), ...(options.imports || [])],
+      providers: [
+        ...asyncProviders,
         ExplorerService,
         LoggerProxy,
         SlackService,
@@ -68,4 +96,39 @@ export class SlackModule implements OnApplicationBootstrap {
     this.slackService.registerViews(views);
     // TODO register other events handler
   }
+}
+
+export function createAsyncProviders(
+  options: SlackModuleAsyncOptions,
+): Provider[] {
+  if (options.useExisting || options.useFactory) {
+    return [createAsyncOptionProvider(options)];
+  }
+  const useClass = options.useClass as Type<SlackModuleOptionsFactory>;
+  return [
+    createAsyncOptionProvider(options),
+    {
+      provide: useClass,
+      useClass,
+    },
+  ];
+}
+
+export function createAsyncOptionProvider(
+  options: SlackModuleAsyncOptions,
+): Provider {
+  if (options.useFactory) {
+    return {
+      provide: SLACK_MODULE_OPTIONS,
+      useFactory: options.useFactory,
+      inject: options.inject || [],
+    };
+  }
+  return {
+    provide: SLACK_MODULE_OPTIONS,
+    useFactory: async (optionsFactory: SlackModuleOptionsFactory) =>
+      await optionsFactory.createSlackModuleOptions(),
+    useValue: (options.useExisting ||
+      options.useClass) as Type<SlackModuleOptionsFactory>,
+  };
 }
